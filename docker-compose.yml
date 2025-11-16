@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  web:
+    build: .
+    restart: unless-stopped
+
+    # 1) โหลดตัวแปรทั้งหมดจาก .env
+    env_file:
+      - .env
+
+    # 2) จะใส่ค่าเพิ่ม/override ก็ได้ (optional)
+    environment:
+      NODE_ENV: "production"
+      # ถ้าอยาก override PORT ก็ทำได้ แต่ถ้าไม่จำเป็น ปล่อยให้ใช้จาก .env ก็ได้
+      # PORT: "3005"
+
+    ports:
+      # ใช้ PORT จาก .env ถ้ามี, ถ้าไม่มีให้ default เป็น 3005
+      - "${PORT:-3005}:${PORT:-3005}"
+
+    # 3) Prisma migrate + start app
+    command: >
+      sh -c "npx prisma migrate deploy && npm start"
