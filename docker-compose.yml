@@ -2,23 +2,36 @@ version: "3.9"
 
 services:
   web:
+    # สร้าง image จาก Dockerfile ในโฟลเดอร์ปัจจุบัน
     build: .
+
+    # restart อัตโนมัติถ้า container ล้ม
     restart: unless-stopped
 
-    # 1) โหลดตัวแปรทั้งหมดจาก .env
+    # โหลดค่าตัวแปรจากไฟล์ .env
     env_file:
       - .env
 
-    # 2) จะใส่ค่าเพิ่ม/override ก็ได้ (optional)
     environment:
       NODE_ENV: "production"
-      # ถ้าอยาก override PORT ก็ทำได้ แต่ถ้าไม่จำเป็น ปล่อยให้ใช้จาก .env ก็ได้
-      # PORT: "3005"
+      # ถ้าใน .env มี PORT ก็จะ override port ตรง ports ให้โดยอัตโนมัติ
 
     ports:
-      # ใช้ PORT จาก .env ถ้ามี, ถ้าไม่มีให้ default เป็น 3005
-      - 3005:3005
+      # เปิด port ตามที่กำหนด (ใช้ค่า PORT จาก .env ถ้ามี)
+      - "${PORT:-3005}:${PORT:-3005}"
 
-    # 3) Prisma migrate + start app
+    # Prisma migrate ก่อน แล้วค่อย start app
     command: >
-      sh -c "npx prisma migrate deploy && npm start"
+      sh -c "
+      npx prisma migrate deploy &&
+      npm start
+      "
+
+    # ถ้าต้องการให้ container คุยกับ DB ที่รันใน docker อื่น ให้ uncomment ได้
+    # networks:
+    #   - my-network
+
+# ประกาศ network (optional)
+# networks:
+#   my-network:
+#     driver: bridge
