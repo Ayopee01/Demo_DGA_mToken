@@ -17,7 +17,7 @@ services:
 
     ports:
       # ใช้ PORT จาก .env ถ้ามี, ถ้าไม่มีให้ default เป็น 3005
-      - "${PORT:-3005}:${PORT:-3005}"
+      - 3005:3005
 
     # 3) Prisma migrate + start app
     command: >
