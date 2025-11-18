@@ -1,8 +1,11 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  basePath: "/test2",
-  assetPrefix: "/test2",
-  output: "standalone"
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  /* config options here */
+  reactCompiler: true,
+  // basePath: "/test2",
+  // assetPrefix: "/test2",
+  // output: "standalone"
 };
 
-module.exports = nextConfig;
+export default nextConfig;
