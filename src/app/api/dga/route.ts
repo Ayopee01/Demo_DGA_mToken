@@ -74,7 +74,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<ApiResponse>>
     const validateUrl = `https://api.egov.go.th/ws/auth/validate?ConsumerSecret=${encodeURIComponent(
       consumerSecret
     )}&AgentID=${encodeURIComponent(agentId)}`
-
+ 
     const validateResp = await fetch(validateUrl, {
       method: 'GET',
       headers: {
