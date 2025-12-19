@@ -1,7 +1,6 @@
 'use client'
 
 import { Suspense, useEffect, useState } from 'react'
-import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import type { ApiResponse, UserDto } from '@/types/dga'
 import {
@@ -53,7 +52,6 @@ const getAppIdAndMTokenFromSDK = (): AppTokenPair | null => {
 
 /**
  * อ่าน response แบบปลอดภัย: อ่านเป็น text ก่อน แล้วค่อย parse JSON
- * ป้องกันเคส body ว่าง / ไม่ใช่ JSON / upstream ส่ง HTML กลับมา
  */
 async function readApiResponse(resp: Response): Promise<{ json: any; text: string }> {
   const text = await resp.text().catch(() => '')
@@ -66,6 +64,17 @@ async function readApiResponse(resp: Response): Promise<{ json: any; text: strin
     }
   })()
   return { json, text }
+}
+
+/**
+ * หา base path แบบอัตโนมัติ:
+ * - ถ้า page ถูกเปิดภายใต้ /test2/... ให้ basePath = '/test2'
+ * - ไม่งั้น basePath = '' (root)
+ */
+function getBasePath(): string {
+  if (typeof window === 'undefined') return ''
+  const p = window.location.pathname || ''
+  return p.startsWith('/test2') ? '/test2' : ''
 }
 
 function ProductionPageInner() {
@@ -107,17 +116,15 @@ function ProductionPageInner() {
           }
         }
 
-        const basePath =
-          process.env.NEXT_PUBLIC_BASE_PATH ??
-          '' // ถ้าไม่ตั้ง env ก็เป็นค่าว่าง
+        const basePath = getBasePath()
 
+        // ✅ ยิงผ่าน /test2/api/dga เมื่อเปิดภายใต้ /test2
         const response = await fetch(`${basePath}/api/dga`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(pair),
         })
 
-        // ✅ สำคัญ: ห้ามใช้ response.json() ตรงๆ
         const { json, text } = await readApiResponse(response)
 
         if (!response.ok) {
@@ -126,7 +133,7 @@ function ProductionPageInner() {
         }
 
         if (!json) {
-          setError(`Invalid/empty JSON from /api/dga\n${text.slice(0, 800)}`)
+          setError(`Invalid/empty JSON from ${basePath}/api/dga\n${text.slice(0, 800)}`)
           return
         }
 
@@ -188,14 +195,11 @@ function ProductionPageInner() {
               </p>
             </div>
           </div>
-
-          {/* (optional) ใส่ปุ่มกลับ/ลิงก์อื่นได้ */}
-          {/* <Link ...>...</Link> */}
         </header>
 
         {/* Main content */}
         <main className="grid flex-1 gap-6 md:grid-cols-[1.3fr,1fr]">
-          {/* Status & messages */}
+          {/* Status */}
           <section className="flex flex-col rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-lg shadow-slate-950/40">
             <div className="flex items-center justify-between">
               <div>
@@ -208,7 +212,6 @@ function ProductionPageInner() {
                 </p>
               </div>
 
-              {/* Badge ตามสถานะ */}
               <div>
                 {loading && (
                   <span className="inline-flex items-center gap-2 rounded-full bg-slate-800 px-3 py-1 text-xs font-medium text-slate-200">
@@ -256,12 +259,14 @@ function ProductionPageInner() {
               )}
 
               {!loading && !error && result && (
-                <p className="text-emerald-300">ดึงข้อมูลผู้ใช้สำเร็จ และบันทึกลงฐานข้อมูลแล้ว</p>
+                <p className="text-emerald-300">
+                  ดึงข้อมูลผู้ใช้สำเร็จ และบันทึกลงฐานข้อมูลแล้ว
+                </p>
               )}
             </div>
           </section>
 
-          {/* Quick user summary */}
+          {/* Summary */}
           <section className="flex flex-col rounded-2xl border border-slate-800 bg-slate-900/70 p-4 shadow-lg shadow-slate-950/40">
             <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-100">
               <FiUser className="h-4 w-4 text-sky-300" />
@@ -319,16 +324,11 @@ function ProductionPageInner() {
             )}
           </section>
         </main>
-
-        {/* ✅ ลบ Raw JSON ออกแล้ว ตามที่ขอ */}
       </div>
     </div>
   )
 }
 
-/**
- * default export – ครอบด้วย Suspense ตามที่ Next.js ต้องการ
- */
 export default function ProductionPage() {
   return (
     <Suspense fallback={<div className="p-4 text-slate-200">Loading...</div>}>

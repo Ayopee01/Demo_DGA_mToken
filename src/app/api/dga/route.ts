@@ -1,244 +1,175 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import {
-  ApiResponse,
-  CitizenData,
-  ValidateResponse,
-  extractCitizenData,
-  isValidateResponse,
-  UserDto,
-} from '@/types/dga'
 
-interface EgovRequestBody {
-  appId: string
-  mToken: string
-}
-
-function toUserDto(user: {
-  id: number
-  userId: string
-  citizenId: string | null
-  firstName: string | null
-  middleName: string | null
-  lastName: string | null
-  dateOfBirthString: string | null
-  mobile: string | null
-  email: string | null
-  notification: boolean
-  createdAt: Date
-  updatedAt: Date
-}): UserDto {
-  return {
-    ...user,
-    createdAt: user.createdAt.toISOString(),
-    updatedAt: user.updatedAt.toISOString(),
-  }
-}
-
-export const dynamic = 'force-dynamic'
+type LoginBody = { appId?: string; mToken?: string }
+type NotifyBody = { appId?: string; userId?: string; message?: string }
 
 function safeJsonParse(text: string) {
   if (!text || !text.trim()) return null
-  try {
-    return JSON.parse(text)
-  } catch {
-    return null
-  }
+  try { return JSON.parse(text) } catch { return null }
 }
 
 async function readResp(resp: Response) {
-  const contentType = resp.headers.get('content-type') || ''
   const text = await resp.text().catch(() => '')
-  const json = contentType.includes('application/json') ? safeJsonParse(text) : safeJsonParse(text)
-  return { contentType, text, json }
+  const json = safeJsonParse(text)
+  return { text, json }
 }
 
-export async function POST(req: NextRequest): Promise<NextResponse<ApiResponse>> {
-  let body: Partial<EgovRequestBody> | null = null
-  try {
-    body = (await req.json()) as Partial<EgovRequestBody>
-  } catch {
-    // กันกรณี body ว่าง/ไม่ใช่ JSON
-    return NextResponse.json(
-      { ok: false, error: 'Request body must be JSON', step: 'db' },
-      { status: 400 }
-    )
-  }
-
-  const appId = body.appId
-  const mToken = body.mToken
-
-  if (typeof appId !== 'string' || typeof mToken !== 'string') {
-    return NextResponse.json(
-      { ok: false, error: 'appId and mToken (string) are required in body', step: 'db' },
-      { status: 400 }
-    )
-  }
-
+async function getGdxToken() {
   const consumerKey = process.env.CONSUMER_KEY
   const consumerSecret = process.env.CONSUMER_SECRET
   const agentId = process.env.AGENT_ID
 
   if (!consumerKey || !consumerSecret || !agentId) {
+    throw new Error('Missing CONSUMER_KEY / CONSUMER_SECRET / AGENT_ID')
+  }
+
+  const url = `https://api.egov.go.th/ws/auth/validate?ConsumerSecret=${encodeURIComponent(
+    consumerSecret
+  )}&AgentID=${encodeURIComponent(agentId)}`
+
+  const resp = await fetch(url, {
+    method: 'GET',
+    headers: { 'Consumer-Key': consumerKey, 'Content-Type': 'application/json' },
+    cache: 'no-store',
+  })
+
+  const r = await readResp(resp)
+  if (!resp.ok || !r.json?.Result) {
+    throw new Error(`validate failed HTTP ${resp.status}: ${r.text?.slice(0, 300)}`)
+  }
+
+  return r.json.Result as string
+}
+
+async function handleLogin(req: NextRequest) {
+  const body = (await req.json().catch(() => ({}))) as LoginBody
+  const appId = body.appId
+  const mToken = body.mToken
+
+  if (!appId || !mToken) {
+    return NextResponse.json({ status: 'error', message: 'Missing Data' }, { status: 400 })
+  }
+
+  const consumerKey = process.env.CONSUMER_KEY
+  if (!consumerKey) throw new Error('Missing CONSUMER_KEY')
+
+  // 1) validate token
+  const token = await getGdxToken()
+
+  // 2) deproc
+  const deprocUrl = 'https://api.egov.go.th/ws/dga/czp/uat/v1/core/shield/data/deproc'
+  const deprocResp = await fetch(deprocUrl, {
+    method: 'POST',
+    headers: {
+      'Consumer-Key': consumerKey,
+      'Content-Type': 'application/json',
+      Token: token,
+    },
+    // ✅ สำคัญ: ใช้ AppId (I ใหญ่) ตาม logic ที่ใช้ได้
+    body: JSON.stringify({ AppId: appId, MToken: mToken }),
+  })
+
+  const d = await readResp(deprocResp)
+  if (!deprocResp.ok) {
     return NextResponse.json(
-      {
-        ok: false,
-        error: 'Missing CONSUMER_KEY / CONSUMER_SECRET / AGENT_ID in environment',
-        step: 'db',
-      },
-      { status: 500 }
+      { status: 'error', message: `deproc HTTP ${deprocResp.status}`, detail: d.text?.slice(0, 800) },
+      { status: 502 }
     )
   }
 
-  try {
-    // Step 1: validate → get Token
-    const validateUrl = `https://api.egov.go.th/ws/auth/validate?ConsumerSecret=${encodeURIComponent(
-      consumerSecret
-    )}&AgentID=${encodeURIComponent(agentId)}`
-
-    const validateResp = await fetch(validateUrl, {
-      method: 'GET',
-      headers: {
-        'Consumer-Key': consumerKey,
-        'Content-Type': 'application/json',
-      },
-    })
-
-    const v = await readResp(validateResp)
-
-    if (!validateResp.ok || !isValidateResponse(v.json)) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: `Failed to get Token from validate (HTTP ${validateResp.status})`,
-          step: 'validate',
-          // ช่วย debug ถ้า upstream ส่ง HTML/ข้อความแปลกๆมา
-          detail: v.text?.slice(0, 800) || '',
-        } as any,
-        { status: 502 }
-      )
-    }
-
-    const apiToken: string = (v.json as ValidateResponse).Result
-
-    // Step 2: deproc
-    const deprocUrl = 'https://api.egov.go.th/ws/dga/czp/uat/v1/core/shield/data/deproc'
-
-    const deprocResp = await fetch(deprocUrl, {
-      method: 'POST',
-      headers: {
-        'Consumer-Key': consumerKey,
-        'Content-Type': 'application/json',
-        Token: apiToken,
-      },
-      body: JSON.stringify({
-        Appid: appId,
-        MToken: mToken,
-      }),
-    })
-
-    const d = await readResp(deprocResp)
-
-    if (!deprocResp.ok) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: `deproc API returned non-OK status (HTTP ${deprocResp.status})`,
-          step: 'deproc',
-          detail: d.text?.slice(0, 800) || '',
-        } as any,
-        { status: 502 }
-      )
-    }
-
-    if (!d.json) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: 'deproc response is not JSON or empty body',
-          step: 'deproc',
-          detail: d.text?.slice(0, 800) || '',
-        } as any,
-        { status: 502 }
-      )
-    }
-
-    const citizen: CitizenData | null = extractCitizenData(d.json)
-
-    if (!citizen) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: 'Could not parse citizen data from deproc response',
-          step: 'deproc',
-        },
-        { status: 200 }
-      )
-    }
-
-    // Step 3: Notification (ถ้าเปิด)
-    if (citizen.notification) {
-      const notificationUrl = 'https://api.egov.go.th/ws/dga/czp/uat/v1/core/notification/push'
-      const nowIso = new Date().toISOString()
-
-      const notificationBody = {
-        appid: appId,
-        data: [
-          {
-            message: `สวัสดี ${citizen.firstName} ${citizen.lastName} นี่คือข้อความทดสอบจากระบบ`,
-            userId: citizen.userId,
-          },
-        ],
-        sendDateTime: nowIso,
-      }
-
-      const notificationResp = await fetch(notificationUrl, {
-        method: 'POST',
-        headers: {
-          'Consumer-Key': consumerKey,
-          'Content-Type': 'application/json',
-          Token: apiToken,
-        },
-        body: JSON.stringify(notificationBody),
-      })
-
-      if (!notificationResp.ok) {
-        console.warn('Notification API returned non-OK status')
-      }
-    }
-
-    // Step 4: Save DB
-    const savedUser = await prisma.user.upsert({
-      where: { userId: citizen.userId },
-      update: {
-        citizenId: citizen.citizenId,
-        firstName: citizen.firstName,
-        middleName: citizen.middleName ?? null,
-        lastName: citizen.lastName,
-        dateOfBirthString: citizen.dateOfBirthString,
-        mobile: citizen.mobile,
-        email: citizen.email,
-        notification: citizen.notification,
-      },
-      create: {
-        userId: citizen.userId,
-        citizenId: citizen.citizenId,
-        firstName: citizen.firstName,
-        middleName: citizen.middleName ?? null,
-        lastName: citizen.lastName,
-        dateOfBirthString: citizen.dateOfBirthString,
-        mobile: citizen.mobile,
-        email: citizen.email,
-        notification: citizen.notification,
-      },
-    })
-
-    return NextResponse.json<ApiResponse>({ ok: true, saved: toUserDto(savedUser) })
-  } catch (error) {
-    console.error(error)
-    return NextResponse.json<ApiResponse>(
-      { ok: false, error: String(error), step: 'db' },
-      { status: 500 }
+  const pData = d.json?.result
+  if (!pData) {
+    return NextResponse.json(
+      { status: 'error', message: 'Deproc returned NULL (Token Expired / invalid payload)', detail: d.text?.slice(0, 800) },
+      { status: 502 }
     )
   }
+
+  // 3) save db (ปรับให้ตรง schema ของคุณได้)
+  const saved = await prisma.user.upsert({
+    where: { userId: pData.userId },
+    update: {
+      citizenId: pData.citizenId ?? null,
+      firstName: pData.firstName ?? null,
+      lastName: pData.lastName ?? null,
+      dateOfBirthString: pData.dateOfBirthString ?? null,
+      mobile: pData.mobile ?? null,
+      email: pData.email ?? null,
+      notification: !!pData.notification,
+    },
+    create: {
+      userId: pData.userId,
+      citizenId: pData.citizenId ?? null,
+      firstName: pData.firstName ?? null,
+      lastName: pData.lastName ?? null,
+      dateOfBirthString: pData.dateOfBirthString ?? null,
+      mobile: pData.mobile ?? null,
+      email: pData.email ?? null,
+      notification: !!pData.notification,
+    },
+  })
+
+  return NextResponse.json({
+    status: 'success',
+    message: 'Login successful',
+    data: {
+      firstName: saved.firstName,
+      lastName: saved.lastName,
+      userId: saved.userId,
+      appId,
+    },
+  })
+}
+
+async function handleNotify(req: NextRequest) {
+  const body = (await req.json().catch(() => ({}))) as NotifyBody
+  const { appId, userId, message } = body
+
+  if (!appId || !userId) {
+    return NextResponse.json({ success: false, message: 'Missing appId or userId' }, { status: 400 })
+  }
+
+  const consumerKey = process.env.CONSUMER_KEY
+  if (!consumerKey) throw new Error('Missing CONSUMER_KEY')
+
+  const token = await getGdxToken()
+
+  const notificationUrl = 'https://api.egov.go.th/ws/dga/czp/uat/v1/core/notification/push'
+  const nowIso = new Date().toISOString()
+
+  const resp = await fetch(notificationUrl, {
+    method: 'POST',
+    headers: {
+      'Consumer-Key': consumerKey,
+      'Content-Type': 'application/json',
+      Token: token,
+    },
+    body: JSON.stringify({
+      appId,
+      data: [{ message: message || 'ทดสอบแจ้งเตือนจากระบบ', userId }],
+      sendDateTime: nowIso,
+    }),
+  })
+
+  const r = await readResp(resp)
+  if (!resp.ok) {
+    return NextResponse.json(
+      { success: false, message: `Notification HTTP ${resp.status}`, error: r.json ?? r.text },
+      { status: 502 }
+    )
+  }
+
+  return NextResponse.json({ success: true, message: 'ส่ง Notification สำเร็จ', result: r.json ?? r.text })
+}
+
+export async function POST(req: NextRequest) {
+  const op = req.nextUrl.searchParams.get('op') // login | notify | null
+
+  // ถ้าเรียกผ่าน rewrite /test2/auth/login -> op=login
+  if (op === 'login') return handleLogin(req)
+  if (op === 'notify') return handleNotify(req)
+
+  // default (กรณียิง /test2/api/dga หรือ /api/dga) ให้ทำ login เหมือนเดิม
+  return handleLogin(req)
 }
